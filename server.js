@@ -35,6 +35,6 @@ cron.schedule('0 0 * * *', () => {
 }, { timezone: "Asia/Ho_Chi_Minh" });
 
 // QUAN TRỌNG: Thêm '0.0.0.0' để nhận kết nối từ Port Forwarding
-app.listen(port, '0.0.0.1', () => {
+app.listen(port, '0.0.0.0', () => {
     console.log(`Backend chạy tại port ${port} - Mày phải cố lên!!!!`);
 });
