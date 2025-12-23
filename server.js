@@ -9,17 +9,25 @@ const app = express();
 const cookieParser = require('cookie-parser');
 const port = process.env.PORT || 8080;
 
-// Cấu hình CORS để chấp nhận các URL tạm thời từ VS Code
+// Cấu hình CORS linh hoạt cho Production và Dev Tunnel
 app.use(cors({
     origin: function (origin, callback) {
-        // Cho phép không có origin (như Postman) hoặc các link từ vscode.dev / github.dev
-        if (!origin || origin.includes('vscode.dev') || origin.includes('github.dev') || origin === process.env.URL_CLIENTS) {
+        // 1. Cho phép không có origin (như Postman hoặc các thiết bị mobile cũ)
+        // 2. Cho phép domain chính thức từ biến môi trường
+        // 3. Cho phép các domain tạm thời từ VS Code Tunnel (*.devtunnels.ms và *.vscode.dev)
+        if (!origin || 
+            origin === process.env.URL_CLIENTS || 
+            origin.includes('vscode.dev') || 
+            origin.includes('github.dev') || 
+            origin.includes('devtunnels.ms')) {
             callback(null, true);
         } else {
+            console.log("CORS bị từ chối cho origin:", origin); // Log để kiểm tra nếu vẫn lỗi
             callback(new Error('Not allowed by CORS'));
         }
     },
-    credentials: true, // Quan trọng để gửi Cookie/Token
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    credentials: true, // Bắt buộc để nhận Cookie/Token từ Frontend
 }));
 
 app.use(cookieParser());
@@ -29,12 +37,11 @@ app.use(express.urlencoded({ extended: true }));
 dbConnect();
 initRoutes(app);
 
-// Cron job giữ nguyên
 cron.schedule('0 0 * * *', () => {
     generateDailySessions();
 }, { timezone: "Asia/Ho_Chi_Minh" });
 
-// QUAN TRỌNG: Thêm '0.0.0.0' để nhận kết nối từ Port Forwarding
+// QUAN TRỌNG: Render tự động gán PORT qua biến môi trường
 app.listen(port, '0.0.0.0', () => {
     console.log(`Backend chạy tại port ${port} - Mày phải cố lên!!!!`);
 });
