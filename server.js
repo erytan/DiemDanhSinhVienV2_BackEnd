@@ -37,9 +37,18 @@ app.use(express.urlencoded({ extended: true }));
 dbConnect();
 initRoutes(app);
 
-cron.schedule('0 0 * * *', () => {
-    generateDailySessions();
-}, { timezone: "Asia/Ho_Chi_Minh" });
+cron.schedule('0 0 * * *', async () => {
+    console.log("--- BẮT ĐẦU CRON JOB ---");
+    try {
+        await generateDailySessions();
+        console.log("--- KẾT THÚC CRON JOB ---");
+    } catch (err) {
+        console.error("LỖI CRON JOB TỔNG:", err);
+    }
+}, { 
+    scheduled: true,
+    timezone: "Asia/Ho_Chi_Minh" 
+});
 
 // QUAN TRỌNG: Render tự động gán PORT qua biến môi trường
 app.listen(port, '0.0.0.0', () => {
