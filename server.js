@@ -37,13 +37,10 @@ app.use(express.urlencoded({ extended: true }));
 dbConnect();
 initRoutes(app);
 
-cron.schedule('0 0 * * *', async () => {
-    console.log("--- BẮT ĐẦU CRON JOB ---");
+cron.schedule('* * * * *', async () => {
     try {
         await generateDailySessions();
-        console.log("--- KẾT THÚC CRON JOB ---");
     } catch (err) {
-        console.error("LỖI CRON JOB TỔNG:", err);
     }
 }, { 
     scheduled: true,
