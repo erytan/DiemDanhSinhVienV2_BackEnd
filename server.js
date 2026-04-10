@@ -18,6 +18,7 @@ app.use(cors({
         // 3. Cho phép các domain tạm thời từ VS Code Tunnel (*.devtunnels.ms và *.vscode.dev)
         if (!origin || 
             origin === process.env.URL_CLIENTS || 
+            origin.includes('localhost') || 
             origin.includes('vscode.dev') || 
             origin.includes('github.dev') || 
             origin.includes('devtunnels.ms')) {
