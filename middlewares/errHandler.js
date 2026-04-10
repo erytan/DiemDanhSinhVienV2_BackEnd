@@ -10,7 +10,9 @@ const errHandler = (error, req, res, next) => {
         mes: error.message
     })
 }
+
 module.exports = {
     notFound,
-    errHandler
+    errHandler,
+   
 }

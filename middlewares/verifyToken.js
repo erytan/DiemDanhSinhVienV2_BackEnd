@@ -180,11 +180,29 @@ const isAdmin = asyncHandler(async (req, res, next) => {
   }
   next();
 });
-
+const checkAccountStatus = async (req, res, next) => {
+  try {
+      const user = await User.findById(req.user._id);
+      if (!user || user.role == 3) {
+          return res.status(403).json({
+              success: false,
+              message: "Tài khoản của bạn đã bị khóa hoặc không tồn tại",
+              code: "ACCOUNT_DISABLED"
+          });
+      }
+      next();
+  }
+  catch (error) {
+      res.status(500).json({
+          message: "Lỗi máy chủ",
+      })
+  }
+}
 module.exports = {
   verifyAccessToken,
   isAdmin,
   validateClassCreation,
   validateClassCreation1,
-  validateEvent
+  validateEvent,
+  checkAccountStatus
 };

@@ -91,20 +91,6 @@ const getDocumentsByClassId = asyncHandler(async (req, res) => {
             error: "Class not found."
         });
     }
-
-    // 2️⃣ KIỂM TRA QUYỀN (QUAN TRỌNG 🔥)
-    // Admin thì cho xem hết
-    if (user.role !== 'admin') {
-        const isStudentInClass = existingClass.students.includes(user.user_id);
-
-        if (!isStudentInClass) {
-            return res.status(403).json({
-                success: false,
-                error: "You are not a member of this class."
-            });
-        }
-    }
-
     // 3️⃣ Query document (sau khi đã check quyền)
     const query = {
         'class_ids.class_id': class_id

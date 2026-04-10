@@ -3,6 +3,7 @@ const ctrls = require('../controllers/session')
 const {verifyAccessToken, isAdmin } = require('../middlewares/verifyToken');
 
 router.post ("/create",[verifyAccessToken,isAdmin],ctrls.createSession);
+router.get("/history",[verifyAccessToken],ctrls.getAttendanceHistory)
 router.get("/today",verifyAccessToken,ctrls.getTodaySessionByUser);
 router.get("/",[verifyAccessToken,isAdmin],ctrls.getAllSession);
 router.get("/:session_id",[verifyAccessToken,isAdmin],ctrls.getSession);

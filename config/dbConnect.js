@@ -12,7 +12,7 @@ const dbConnect = async()=>{
     }
     catch(error)
     {
-        console.log("Error in Db connection",err);
+        console.log("Error in Db connection",error);
     }
 }
 module.exports=dbConnect

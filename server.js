@@ -1,4 +1,5 @@
 const express = require('express');
+const dns = require('dns');
 require('dotenv').config({ debug: false });
 const dbConnect = require('./config/dbConnect');
 const initRoutes = require('./routes');
@@ -8,7 +9,7 @@ const { generateDailySessions } = require('./controllers/session')
 const app = express();
 const cookieParser = require('cookie-parser');
 const port = process.env.PORT || 8080;
-
+dns.setServers(['8.8.8.8', '8.8.4.4']);
 // Cấu hình CORS linh hoạt cho Production và Dev Tunnel
 app.use(cors({
     origin: function (origin, callback) {
@@ -37,7 +38,7 @@ app.use(express.urlencoded({ extended: true }));
 dbConnect();
 initRoutes(app);
 
-cron.schedule('* * * * *', async () => {
+cron.schedule('0 0 * * *', async () => {
     try {
         await generateDailySessions();
     } catch (err) {

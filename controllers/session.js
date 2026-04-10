@@ -142,101 +142,123 @@ const checkAttendance = asyncHandler(async (req, res) => {
 
 // Cấu hình số lần thử lại tối đa
 const MAX_RETRIES = 5;
-
 const generateDailySessions = async () => {
-    // ÉP BUỘC LẤY GIỜ VIỆT NAM CHO LOGIC SO SÁNH
-    const getVNTime = () => {
-        return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Ho_Chi_Minh" }));
-    };
-
+    // 1. VÒNG LẶP THỬ LẠI GIAO DỊCH (RETRY LOGIC)
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         const dbSession = await mongoose.startSession();
+        // Bắt đầu giao dịch với Write Concern an toàn
         dbSession.startTransaction({ writeConcern: { w: 'majority' } });
 
         try {
-            const now = getVNTime();
-            const currentDayOfWeek = now.getDay(); // 0: Chủ nhật, 1: Thứ hai...
-            
+            // --- 2. XỬ LÝ THỜI GIAN VÀ NGÀY TRONG TUẦN ---
+            const now = new Date();
+            const currentDayOfWeek = now.getDay(); // Chủ nhật = 0, Thứ Hai = 1, ...
+
+            // Đặt ngày mốc về 00:00:00 của ngày hôm nay (cần thiết cho việc tính sessionDate)
             const today = new Date(now);
             today.setHours(0, 0, 0, 0);
 
-            console.log(`[Attempt ${attempt}] Đang quét lớp học cho Thứ ${currentDayOfWeek === 0 ? 'CN' : currentDayOfWeek + 1}`);
+            console.log(`[Scheduled Run] Checking for classes for Day ${currentDayOfWeek}. Attempt: ${attempt}`);
 
-            // 1. Tìm các lớp có lịch vào hôm nay
+            // 3. TÌM KIẾM CÁC LỚP HỌC HỢP LỆ
             const allClasses = await Class.find({
-                weeks: { $gt: 0 },
-                schedule: { $elemMatch: { dayOfWeek: currentDayOfWeek } }
+                weeks: { $gt: 0 }, // Chỉ các lớp còn tuần học
+                schedule: {
+                    $elemMatch: { dayOfWeek: currentDayOfWeek } // Chỉ các lớp có lịch vào ngày hôm nay
+                }
             }).session(dbSession);
 
-            if (!allClasses || allClasses.length === 0) {
-                console.log("Không có lớp nào cần tạo session hôm nay.");
+            if (allClasses.length === 0) {
                 await dbSession.commitTransaction();
                 dbSession.endSession();
+                console.log("No classes found to generate sessions for today.");
                 return;
             }
 
-            let totalGenerated = 0;
+            let totalSessionsGenerated = 0;
+            let classIDsUpdated = new Set(); // Dùng để theo dõi lớp đã giảm weeks
 
+            // 4. LẶP VÀ TẠO SESSION
             for (const classItem of allClasses) {
-                const todaySchedules = classItem.schedule.filter(sch => sch.dayOfWeek === currentDayOfWeek);
-                let hasCreated = false;
+                // Lấy tất cả lịch trình của lớp này trong ngày hôm nay
+                const todaySchedules = classItem.schedule.filter((sch) => sch.dayOfWeek === currentDayOfWeek);
+
+                let isSessionCreatedForThisClass = false;
 
                 for (const scheduleItem of todaySchedules) {
                     const [hour, minute] = scheduleItem.time.split(':').map(Number);
+
+                    // Tính toán Date chính xác cho buổi học (Ngày 00:00:00 + Giờ học)
                     const sessionDate = new Date(today);
                     sessionDate.setHours(hour, minute, 0, 0);
 
-                    // Kiểm tra trùng lặp
-                    const exists = await Session.findOne({
+                    // Kiểm tra TỒN TẠI (Quan trọng để tránh tạo trùng trong các lần thử lại)
+                    const existingSession = await Session.findOne({
                         class_id: classItem.class_id,
                         date: sessionDate
                     }).session(dbSession);
 
-                    if (exists) continue;
+                    if (existingSession) {
+                        console.warn(`Buổi học đã tồn tại cho lớp ${classItem.class_id} lúc ${scheduleItem.time}. Bỏ qua.`);
+                        continue;
+                    }
 
-                    const sequence = await getNextSequenceValue('session');
-                    const newId = `SS${sequence.toString().padStart(5, "0")}`;
+                    // Tạo Session
+                    const sequenceValue = await getNextSequenceValue('session');
+                    const newSessionId = `SS${sequenceValue.toString().padStart(5, "0")}`;
+                    const initialAttendance = classItem.students.map(studentId => ({ student_id: studentId, status: 'absent' }));
 
                     await Session.create([{
-                        session_id: newId,
+                        session_id: newSessionId,
                         class_id: classItem.class_id,
                         date: sessionDate,
-                        attendance: classItem.students.map(id => ({ student_id: id, status: 'absent' }))
+                        attendance: initialAttendance,
                     }], { session: dbSession });
 
-                    totalGenerated++;
-                    hasCreated = true;
+                    totalSessionsGenerated++;
+                    isSessionCreatedForThisClass = true;
+                    console.log(`Đã tạo buổi học ${newSessionId} cho lớp ${classItem.class_id} lúc ${scheduleItem.time}.`);
                 }
 
-                if (hasCreated) {
-                    // Dùng updateOne để tránh xung đột version (__v) của Mongoose khi save()
-                    await Class.updateOne(
-                        { _id: classItem._id },
-                        { $inc: { weeks: -1 } }
-                    ).session(dbSession);
+                // 5. CẬP NHẬT SỐ TUẦN (Chỉ giảm 1 lần cho mỗi lớp, nếu có session được tạo)
+                if (isSessionCreatedForThisClass) {
+                    // Cải tiến: Đánh dấu lớp đã được cập nhật để tránh cập nhật lặp lại không cần thiết
+                    if (!classIDsUpdated.has(classItem.class_id)) {
+                        classItem.weeks -= 1;
+                        await classItem.save({ session: dbSession });
+                        classIDsUpdated.add(classItem.class_id);
+                    }
                 }
             }
 
+            // 6. Hoàn tất Giao dịch thành công
             await dbSession.commitTransaction();
+            console.log(`Successfully completed daily session generation after ${attempt} attempt(s). Total sessions generated: ${totalSessionsGenerated}.`);
             dbSession.endSession();
-            console.log(`Đã tạo thành công ${totalGenerated} buổi học.`);
-            return;
+            return; // Thoát khỏi vòng lặp thử lại
 
         } catch (error) {
+            // 7. XỬ LÝ XUNG ĐỘT GHI (WRITE CONFLICT)
             await dbSession.abortTransaction();
             dbSession.endSession();
 
-            const isTransient = error.code === 112 || (error.errorLabelSet && error.errorLabelSet.has('TransientTransactionError'));
-            
-            if (isTransient && attempt < MAX_RETRIES) {
-                console.warn(`Xung đột DB, đang thử lại lần ${attempt + 1}...`);
-                await new Promise(res => setTimeout(res, 100 * attempt));
+            // Lỗi 112 (WriteConflict) hoặc TransientTransactionError
+            if (error.code === 112 || (error.errorLabelSet && error.errorLabelSet.has('TransientTransactionError'))) {
+                console.warn(`Attempt ${attempt} failed due to Write Conflict. Retrying...`);
+                // Delay trước khi thử lại
+                await new Promise(resolve => setTimeout(resolve, 50 * attempt));
                 continue;
+            } else {
+                // Lỗi nghiêm trọng khác
+                console.error("Critical Error during daily session generation, transaction aborted:", error);
+                throw error;
             }
-            throw error; // Lỗi nghiêm trọng thì bắn ra ngoài cho Cron bắt được
         }
     }
-};
+
+    // Nếu hết số lần thử lại
+    console.error(`Failed to complete daily session generation after ${MAX_RETRIES} attempts. Check database and system logs.`);
+}
 const getAllSession = asyncHandler(async (req, res) => {
     const { page = 1, limit = 10 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -337,36 +359,36 @@ const getTodaySessionByUser = asyncHandler(async (req, res) => {
 
     const sessions = await Session.find({
         date: { $gte: startOfDay, $lte: endOfDay },
-        "attendance.student_id": user_id 
+        "attendance.student_id": user_id
     })
-    .sort({ date: 1 })
-    .limit(4)
-    .populate({
-        path: 'class_id',
-        model: 'class',
-        localField: 'class_id',    
-        foreignField: 'class_id', 
-        select: 'class_name course_ids', 
-        populate: {
-            path: 'course_ids',
-            model: 'course',
-            localField: 'course_ids',
-            foreignField: 'course_id',
-            select: 'name -_id' 
-        }
-    })
-    .lean();
+        .sort({ date: 1 })
+        .limit(4)
+        .populate({
+            path: 'class_id',
+            model: 'class',
+            localField: 'class_id',
+            foreignField: 'class_id',
+            select: 'class_name course_ids',
+            populate: {
+                path: 'course_ids',
+                model: 'course',
+                localField: 'course_ids',
+                foreignField: 'course_id',
+                select: 'name -_id'
+            }
+        })
+        .lean();
 
     const formattedData = sessions.map(session => {
         const sessionDate = new Date(session.date);
-        
+
         // 1. Định dạng thời gian
         const startTime = sessionDate.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false });
-        const endTimeDate = new Date(sessionDate.getTime() + (2 * 60 + 30) * 60 * 1000); 
+        const endTimeDate = new Date(sessionDate.getTime() + (2 * 60 + 30) * 60 * 1000);
         const endTime = endTimeDate.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false });
 
         const days = ["Chủ Nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
-        
+
         // 2. LẤY TRẠNG THÁI ĐIỂM DANH CỦA RIÊNG USER NÀY
         const userAttendance = session.attendance?.find(att => att.student_id === user_id);
         const attendanceStatus = userAttendance ? userAttendance.status : 'absent';
@@ -386,7 +408,96 @@ const getTodaySessionByUser = asyncHandler(async (req, res) => {
         data: formattedData
     });
 });
-    
+// Lịch sử diểm danh chi tiết theo Lớp/Tháng/Năm
+const getAttendanceHistory = asyncHandler(async (req, res) => {
+    const { user_id } = req.user; // Lấy từ token xác thực
+    const { class_id, month, year } = req.query;
+
+    if (!class_id || !month || !year) {
+        return res.status(400).json({
+            success: false,
+            message: "Missing required parameters: class_id, month, and year."
+        });
+    }
+
+    // 1. Xác định khoảng thời gian từ đầu tháng đến cuối tháng
+    const startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
+    const endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59);
+
+    // 2. Truy vấn tất cả session của lớp này trong tháng đó
+    const sessions = await Session.find({
+        class_id: class_id,
+        date: { $gte: startDate, $lte: endDate }
+    })
+        .sort({ date: 1 }) // Sắp xếp theo thứ tự ngày tăng dần để tính "Buổi học"
+        .populate({
+            path: 'class_id',
+            model: 'class',
+            foreignField: 'class_id',
+            select: 'class_name course_ids schedule',
+            populate: {
+                path: 'course_ids',
+                model: 'course',
+                foreignField: 'course_id',
+                select: 'name -_id'
+            }
+        })
+        .lean();
+
+    // 3. Định dạng dữ liệu trả về cho Frontend
+    const formattedHistory = sessions.map((session, index) => {
+        const sessionDate = new Date(session.date);
+        const dayOfWeekOfSession = sessionDate.getDay();
+
+        // Lấy chuỗi giờ:phút từ Session (ví dụ: "08:00") để đối chiếu
+        const sessionTimeStr = sessionDate.toLocaleTimeString('vi-VN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        });
+
+        // 1. Tìm schedule khớp cả Thứ VÀ Giờ
+        // Điều này giải quyết việc một ngày có nhiều ca học khác nhau
+        const matchingSchedule = session.class_id?.schedule?.find(sch =>
+            sch.dayOfWeek === dayOfWeekOfSession && sch.time === sessionTimeStr
+        );
+
+        // 2. Nếu tìm thấy khớp tuyệt đối thì lấy, không thì lấy cái đầu tiên của ngày đó, 
+        // cuối cùng mới dùng giờ của session date
+        const startTime = matchingSchedule
+            ? matchingSchedule.time
+            : (session.class_id?.schedule?.find(sch => sch.dayOfWeek === dayOfWeekOfSession)?.time || sessionTimeStr);
+
+        const userAttendance = session.attendance?.find(att => att.student_id === user_id);
+
+        return {
+            date: sessionDate.toLocaleDateString('vi-VN'),
+            subject_name: session.class_id?.course_ids?.[0]?.name || "Môn học không xác định",
+            session_number: `Buổi ${index + 1}`,
+            room: `Phòng ${session.class_id?.class_name}` || "N/A",
+            start_time: startTime,
+            status: userAttendance ? userAttendance.status : 'absent',
+            scanned_at: userAttendance?.scanned_at ?
+                new Date(userAttendance.scanned_at).toLocaleTimeString('vi-VN') : null
+        };
+    });
+    // 4. Tính toán nhanh stats tổng quát cho tháng này
+    const stats = {
+        total_sessions: formattedHistory.length,
+        present_count: formattedHistory.filter(h => h.status === 'present').length,
+        absent_count: formattedHistory.filter(h => h.status === 'absent').length,
+    };
+    stats.attendance_rate = stats.total_sessions > 0
+        ? Math.round((stats.present_count / stats.total_sessions) * 100)
+        : 0;
+
+    res.status(200).json({
+        success: true,
+        stats: stats,
+        data: formattedHistory
+    });
+});
+
 module.exports = {
     createSession,
     generateQrCode,
@@ -397,4 +508,5 @@ module.exports = {
     getSession,
     getAllSession,
     getTodaySessionByUser,
+    getAttendanceHistory,
 }
